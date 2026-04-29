@@ -1,0 +1,30 @@
+[project]
+name = "my-voice"
+version = "0.1.0"
+description = "Local low-latency push-to-talk dictation for macOS"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "sounddevice>=0.4.6",
+  "pynput>=1.7.6",
+  "pyperclip>=1.8.2",
+  "faster-whisper>=1.0.0",
+]
+
+[project.optional-dependencies]
+app = [
+  "pyinstaller>=6.0",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+my-voice = "my_voice.app:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["my_voice*"]
