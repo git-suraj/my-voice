@@ -19,12 +19,22 @@ FILLER_PATTERNS = [
 ]
 
 
+def apply_spoken_corrections(text: str) -> str:
+    corrected = text.strip()
+    corrected = _apply_reset_commands(corrected)
+    corrected = _apply_delete_last_sentence(corrected)
+    corrected = _apply_delete_last_word(corrected)
+    corrected = _apply_inline_replacements(corrected)
+    return _collapse_spaces(corrected)
+
+
 def deterministic_cleanup(text: str) -> str:
-    cleaned = f" {text.strip()} "
+    corrected = apply_spoken_corrections(text)
+    cleaned = f" {corrected.strip()} "
     for pattern in FILLER_PATTERNS:
         cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b(\w+)(\s+\1\b)+", r"\1", cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = _collapse_spaces(cleaned)
     cleaned = re.sub(r"\s+([,.!?;:])", r"\1", cleaned)
     cleaned = cleaned.strip()
     if cleaned:
@@ -46,9 +56,10 @@ def polished_cleanup(text: str, config: AppConfig) -> str:
 def _ollama_cleanup(text: str, config: AppConfig) -> str:
     prompt = (
         "Clean this dictated text for direct insertion into a text field.\n"
+        "Apply spoken correction commands such as scratch that, start over, delete last word, delete last sentence, actually, no, and I mean.\n"
         "Remove filler words, repeated words, and false starts.\n"
         "Add punctuation and capitalization.\n"
-        "Preserve the original meaning. Do not summarize.\n"
+        "Preserve the intended meaning. Do not summarize, expand, or invent details.\n"
         "Return only the cleaned text.\n\n"
         f"Text: {text}"
     )
@@ -73,3 +84,51 @@ def _ollama_cleanup(text: str, config: AppConfig) -> str:
     result = json.loads(raw)
     return str(result.get("response", "")).strip().strip('"')
 
+
+def _apply_reset_commands(text: str) -> str:
+    parts = re.split(r"\b(?:scratch that|start over)\b", text, flags=re.IGNORECASE)
+    return parts[-1].strip() if len(parts) > 1 else text
+
+
+def _apply_delete_last_sentence(text: str) -> str:
+    pattern = re.compile(r"\bdelete last sentence\b", flags=re.IGNORECASE)
+    while True:
+        match = pattern.search(text)
+        if not match:
+            return text
+        before = text[: match.start()].rstrip()
+        after = text[match.end() :].lstrip()
+        before = re.sub(r"[^.!?]*[.!?]?\s*$", "", before).rstrip()
+        text = f"{before} {after}".strip()
+
+
+def _apply_delete_last_word(text: str) -> str:
+    pattern = re.compile(r"\bdelete last word\b", flags=re.IGNORECASE)
+    while True:
+        match = pattern.search(text)
+        if not match:
+            return text
+        before = text[: match.start()].rstrip()
+        after = text[match.end() :].lstrip()
+        before = re.sub(r"\S+\s*$", "", before).rstrip()
+        text = f"{before} {after}".strip()
+
+
+def _apply_inline_replacements(text: str) -> str:
+    text = re.sub(
+        r"\b(?P<old>\w+)\s+(?:actually|no|rather|i mean)\s+(?P<new>\w+)\b",
+        lambda match: match.group("new"),
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"\b(?P<old>\w+(?:\s+\w+){0,2})\s+(?:actually|no|rather|i mean)\s+(?P<new>\w+(?:\s+\w+){0,2})(?=$|[,.!?;:])",
+        lambda match: match.group("new"),
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
+def _collapse_spaces(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()

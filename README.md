@@ -131,10 +131,10 @@ Current default behavior:
 
 - Shortcut: `Shift+Esc`.
 - ASR model: `small.en`.
-- Cleanup: `fast`, deterministic cleanup only.
+- Cleanup: `polished`, with deterministic spoken-correction rules first and optional Ollama cleanup second.
 - Final transcription: full-session audio on release.
 - Insertion: clipboard paste.
-- Polished LLM cleanup: off unless `cleanup_mode` is changed to `polished`.
+- Polished LLM cleanup: enabled when Ollama is running; otherwise the app falls back to deterministic cleanup.
 - VAD/chunk transcription: off unless `enable_chunk_transcription` is set to `true`.
 
 In the log, the most important accuracy line is:
@@ -172,7 +172,7 @@ Current important settings:
   "asr_device": "cpu",
   "asr_compute_type": "int8",
   "final_transcription_mode": "full_session",
-  "cleanup_mode": "fast",
+  "cleanup_mode": "polished",
   "text_insertion_method": "clipboard",
   "enable_chunk_transcription": false,
   "vad_backend": "energy",
@@ -201,12 +201,11 @@ The macOS `Fn` key is not exposed by the current hotkey backend, so shortcuts su
 
 ## Accuracy Tuning
 
-For best accuracy, keep:
+For best ASR accuracy, keep:
 
 ```json
 {
   "final_transcription_mode": "full_session",
-  "cleanup_mode": "fast",
   "enable_chunk_transcription": false
 }
 ```
@@ -221,7 +220,50 @@ If accuracy is still not good enough, try a larger Whisper model:
 
 Tradeoff: larger models are slower and use more CPU/RAM.
 
-Avoid `cleanup_mode: "polished"` while debugging accuracy. The local LLM can rewrite text, which makes it harder to tell whether an error came from Whisper or cleanup.
+If you need to debug whether an error came from Whisper or cleanup, temporarily set:
+
+```json
+{
+  "cleanup_mode": "fast"
+}
+```
+
+`fast` mode still applies deterministic spoken-correction rules, but skips the LLM rewrite.
+
+## Spoken Corrections
+
+MyVoice applies simple spoken correction commands before final cleanup.
+
+Supported commands:
+
+```text
+scratch that
+start over
+delete last word
+delete last sentence
+actually
+no
+rather
+I mean
+```
+
+Examples:
+
+```text
+send John the deck scratch that send Sarah the deck
+-> Send Sarah the deck
+
+meet tomorrow delete last word Friday
+-> Meet Friday
+
+Send the invoice. delete last sentence Remind me tomorrow
+-> Remind me tomorrow
+
+send it to John actually Sarah
+-> Send it to Sarah
+```
+
+These rules are deterministic and run locally. In `polished` mode, Ollama gets the already-corrected text and can improve punctuation/formatting.
 
 ## Audio Diagnostics
 
@@ -250,20 +292,20 @@ In default accuracy mode, VAD does not control final transcription. It only matt
 
 ## Polished Cleanup
 
-Polished cleanup uses a small local LLM through Ollama. It is optional and disabled by default via:
-
-```json
-{
-  "cleanup_mode": "fast"
-}
-```
-
-To enable it:
+Polished cleanup uses a small local LLM through Ollama. It is enabled by default in the current config:
 
 ```json
 {
   "cleanup_mode": "polished",
   "ollama_enabled": true
+}
+```
+
+To disable it:
+
+```json
+{
+  "cleanup_mode": "fast"
 }
 ```
 

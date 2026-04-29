@@ -27,7 +27,7 @@ class AppConfig:
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
     final_transcription_mode: str = "full_session"
-    cleanup_mode: str = "fast"
+    cleanup_mode: str = "polished"
     ollama_enabled: bool = True
     ollama_url: str = "http://127.0.0.1:11434/api/generate"
     ollama_model: str = "qwen2.5:1.5b"
