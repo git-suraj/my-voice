@@ -242,7 +242,9 @@ start over
 delete last word
 delete last sentence
 actually
+sorry
 no
+not
 rather
 I mean
 ```
@@ -263,7 +265,35 @@ send it to John actually Sarah
 -> Send it to Sarah
 ```
 
-These rules are deterministic and run locally. In `polished` mode, Ollama gets the already-corrected text and can improve punctuation/formatting.
+These rules are deterministic and run locally.
+
+In `polished` mode, Ollama receives both:
+
+```text
+Raw transcript
+Rule-cleaned draft
+```
+
+The prompt asks the model to resolve broader natural self-corrections, including:
+
+```text
+that's not what I meant
+what I meant was
+make that
+instead
+```
+
+Examples intended for polished mode:
+
+```text
+I need the report by Tuesday that's not what I meant by Thursday
+-> I need the report by Thursday.
+
+book a flight to London make that Paris next week
+-> Book a flight to Paris next week.
+```
+
+The LLM prompt is intentionally conservative: it should apply corrections and formatting, but not summarize, expand, or invent details.
 
 ## Audio Diagnostics
 

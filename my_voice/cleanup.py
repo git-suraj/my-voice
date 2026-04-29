@@ -47,22 +47,48 @@ def polished_cleanup(text: str, config: AppConfig) -> str:
     if config.cleanup_mode != "polished" or not config.ollama_enabled:
         return base
     try:
-        polished = _ollama_cleanup(base, config)
+        polished = _ollama_cleanup(raw_text=text, draft_text=base, config=config)
     except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
         return base
     return polished or base
 
 
-def _ollama_cleanup(text: str, config: AppConfig) -> str:
+def _ollama_cleanup(raw_text: str, draft_text: str, config: AppConfig) -> str:
     prompt = (
-        "Clean this dictated text for direct insertion into a text field.\n"
-        "Apply spoken correction commands such as scratch that, start over, delete last word, delete last sentence, actually, sorry, no, not, rather, and I mean.\n"
-        "Treat phrases like 'John sorry Sarah', 'John no Sarah', and 'John not Sarah' as replacing John with Sarah.\n"
-        "Remove filler words, repeated words, and false starts.\n"
+        "You are a conservative dictation cleanup engine.\n"
+        "Return text for direct insertion into a text field.\n\n"
+        "Resolve natural spoken self-corrections anywhere in the sentence, including corrections phrased as:\n"
+        "- actually ...\n"
+        "- sorry ...\n"
+        "- no ...\n"
+        "- no not ...\n"
+        "- rather ...\n"
+        "- I mean ...\n"
+        "- that's not what I meant ...\n"
+        "- what I meant was ...\n"
+        "- make that ...\n"
+        "- instead ...\n"
+        "- scratch that\n"
+        "- start over\n"
+        "- delete last word\n"
+        "- delete last sentence\n\n"
+        "When the speaker corrects a word, phrase, person, date, time, or object, keep the corrected version and remove the mistaken version.\n"
+        "Remove filler words, repeated words, hesitation fragments, and false starts.\n"
         "Add punctuation and capitalization.\n"
-        "Preserve the intended meaning. Do not summarize, expand, or invent details.\n"
-        "Return only the cleaned text.\n\n"
-        f"Text: {text}"
+        "Preserve the intended meaning. Do not summarize, expand, invent details, or change the user's style.\n"
+        "Return only the final cleaned text. Do not explain your changes.\n\n"
+        "Examples:\n"
+        "Raw: schedule a meeting with John sorry Sarah\n"
+        "Final: Schedule a meeting with Sarah.\n"
+        "Raw: send it tomorrow no Friday\n"
+        "Final: Send it Friday.\n"
+        "Raw: I need the report by Tuesday that's not what I meant by Thursday\n"
+        "Final: I need the report by Thursday.\n"
+        "Raw: book a flight to London make that Paris next week\n"
+        "Final: Book a flight to Paris next week.\n\n"
+        f"Raw transcript: {raw_text}\n"
+        f"Rule-cleaned draft: {draft_text}\n"
+        "Final:"
     )
     payload = {
         "model": config.ollama_model,
@@ -70,7 +96,7 @@ def _ollama_cleanup(text: str, config: AppConfig) -> str:
         "stream": False,
         "options": {
             "temperature": 0,
-            "num_predict": 160,
+            "num_predict": 240,
         },
     }
     body = json.dumps(payload).encode("utf-8")
