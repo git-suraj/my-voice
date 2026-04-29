@@ -33,3 +33,7 @@ def test_delete_last_sentence_removes_previous_sentence() -> None:
 
 def test_inline_actually_replacement() -> None:
     assert apply_spoken_corrections("send it to John actually Sarah") == "send it to Sarah"
+
+
+def test_inline_sorry_replacement() -> None:
+    assert apply_spoken_corrections("schedule a meeting with John sorry Sarah") == "schedule a meeting with Sarah"

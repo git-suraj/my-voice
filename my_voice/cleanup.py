@@ -56,7 +56,8 @@ def polished_cleanup(text: str, config: AppConfig) -> str:
 def _ollama_cleanup(text: str, config: AppConfig) -> str:
     prompt = (
         "Clean this dictated text for direct insertion into a text field.\n"
-        "Apply spoken correction commands such as scratch that, start over, delete last word, delete last sentence, actually, no, and I mean.\n"
+        "Apply spoken correction commands such as scratch that, start over, delete last word, delete last sentence, actually, sorry, no, not, rather, and I mean.\n"
+        "Treat phrases like 'John sorry Sarah', 'John no Sarah', and 'John not Sarah' as replacing John with Sarah.\n"
         "Remove filler words, repeated words, and false starts.\n"
         "Add punctuation and capitalization.\n"
         "Preserve the intended meaning. Do not summarize, expand, or invent details.\n"
@@ -116,13 +117,13 @@ def _apply_delete_last_word(text: str) -> str:
 
 def _apply_inline_replacements(text: str) -> str:
     text = re.sub(
-        r"\b(?P<old>\w+)\s+(?:actually|no|rather|i mean)\s+(?P<new>\w+)\b",
+        r"\b(?P<old>\w+)\s+(?:no not|i mean|actually|sorry|rather|no|not)\s+(?P<new>\w+)\b",
         lambda match: match.group("new"),
         text,
         flags=re.IGNORECASE,
     )
     text = re.sub(
-        r"\b(?P<old>\w+(?:\s+\w+){0,2})\s+(?:actually|no|rather|i mean)\s+(?P<new>\w+(?:\s+\w+){0,2})(?=$|[,.!?;:])",
+        r"\b(?P<old>\w+(?:\s+\w+){0,2})\s+(?:no not|i mean|actually|sorry|rather|no|not)\s+(?P<new>\w+(?:\s+\w+){0,2})(?=$|[,.!?;:])",
         lambda match: match.group("new"),
         text,
         flags=re.IGNORECASE,
