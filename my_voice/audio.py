@@ -9,6 +9,10 @@ import numpy as np
 import sounddevice as sd
 
 
+class AudioCaptureError(RuntimeError):
+    pass
+
+
 @dataclass(slots=True)
 class AudioFrame:
     index: int
@@ -32,18 +36,28 @@ class AudioCapture:
         with self._lock:
             if self._stream is not None:
                 return
-            self._active.set()
             self._index = 0
             self._session_frames.clear()
             blocksize = int(self.sample_rate * self.frame_ms / 1000)
-            self._stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype="float32",
-                blocksize=blocksize,
-                callback=self._callback,
-            )
-            self._stream.start()
+            try:
+                self._stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=self.channels,
+                    dtype="float32",
+                    blocksize=blocksize,
+                    callback=self._callback,
+                )
+                self._stream.start()
+            except Exception as exc:
+                self._active.clear()
+                if self._stream is not None:
+                    try:
+                        self._stream.close()
+                    except Exception:
+                        pass
+                self._stream = None
+                raise AudioCaptureError(f"Could not open microphone input stream: {exc}") from exc
+            self._active.set()
 
     def stop(self) -> None:
         with self._lock:

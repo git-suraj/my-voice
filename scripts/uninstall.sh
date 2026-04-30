@@ -47,7 +47,11 @@ USAGE
   esac
 done
 
+scripts/uninstall_launch_agent.sh >/dev/null 2>&1 || true
 pkill MyVoice 2>/dev/null || true
+pkill -f "MyVoice.app/Contents/MacOS/MyVoice" 2>/dev/null || true
+pkill -f "open -W -n .*MyVoice.app" 2>/dev/null || true
+pkill -9 -f "MyVoice.app/Contents/MacOS/MyVoice" 2>/dev/null || true
 
 rm -rf dist/MyVoice.app
 rm -rf build dist

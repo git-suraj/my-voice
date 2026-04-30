@@ -25,7 +25,7 @@ def _insert_with_system_events(text: str) -> None:
       end tell
     end run
     """
-    subprocess.run(["osascript", "-e", script, text], check=True, timeout=5)
+    _run_osascript(script, text)
 
 
 def _insert_with_clipboard(text: str, restore_clipboard: bool) -> None:
@@ -37,8 +37,17 @@ def _insert_with_clipboard(text: str, restore_clipboard: bool) -> None:
             previous = None
     pyperclip.copy(text)
     script = 'tell application "System Events" to keystroke "v" using command down'
-    subprocess.run(["osascript", "-e", script], check=True, timeout=5)
+    _run_osascript(script)
     if restore_clipboard and previous is not None:
         time.sleep(0.2)
         pyperclip.copy(previous)
 
+
+def _run_osascript(script: str, *args: str) -> None:
+    subprocess.run(
+        ["osascript", "-e", script, *args],
+        check=True,
+        timeout=5,
+        capture_output=True,
+        text=True,
+    )

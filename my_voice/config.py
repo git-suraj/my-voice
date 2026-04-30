@@ -31,9 +31,11 @@ class AppConfig:
     ollama_enabled: bool = True
     ollama_url: str = "http://127.0.0.1:11434/api/generate"
     ollama_model: str = "qwen2.5:1.5b"
-    ollama_timeout_s: float = 1.5
+    ollama_timeout_s: float = 4.0
     text_insertion_method: str = "clipboard"
     restore_clipboard: bool = True
+    feedback_enabled: bool = True
+    feedback_mode: str = "notification"
     debug_full_session_buffer: bool = True
     request_microphone_on_start: bool = True
 

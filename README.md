@@ -9,11 +9,11 @@ hold Shift+Esc
 record the full session audio
 release Shift+Esc
 transcribe the full audio once with local Whisper
-lightly clean the text
+apply deterministic cleanup and optional local LLM cleanup
 insert with clipboard paste
 ```
 
-Chunked/VAD transcription is still present as an experimental mode, but it is disabled by default because full-session transcription is more accurate.
+Chunked/VAD transcription is still present as an experimental mode, but it is disabled by default because full-session transcription is more accurate. Reconciliation is only used for chunk-only fallback text, not for the default full-session transcript.
 
 ## Install
 
@@ -149,6 +149,65 @@ The final inserted output is shown as:
 final: ...
 ```
 
+Each dictation also prints a timing line:
+
+```text
+timing: recording=...ms asr=...ms assemble=...ms reconcile=...ms deterministic_cleanup=...ms llm_cleanup=...ms cleanup_total=...ms insertion=...ms total=...ms llm_used=True
+```
+
+In the default full-session path, `reconcile=0ms` because the raw full-session Whisper result goes directly into cleanup. Reconciliation is only used when the app has to fall back to assembled chunk text.
+
+## UI Feedback
+
+MyVoice runs in the background and shows a menu-bar status item:
+
+```text
+MV    idle
+REC   recording
+WAIT  processing/transcribing/cleaning
+ERR   error
+```
+
+The menu-bar item also has a `Quit MyVoice` menu item.
+
+If you quit from the `MV` menu, start it again with:
+
+```bash
+scripts/restart_launch_agent.sh
+```
+
+The app can also show macOS notifications for activity:
+
+- recording started: `Recording`
+- recording stopped: `Processing`
+- text inserted: `Inserted`
+- microphone start failed: `Microphone error`
+
+Configure this in the app config:
+
+```json
+{
+  "feedback_enabled": true,
+  "feedback_mode": "notification"
+}
+```
+
+Supported feedback modes:
+
+```text
+notification
+sound
+both
+```
+
+To disable feedback:
+
+```json
+{
+  "feedback_enabled": false
+}
+```
+
 ## Configuration
 
 Terminal mode config:
@@ -184,7 +243,9 @@ Current important settings:
   "ollama_enabled": true,
   "ollama_url": "http://127.0.0.1:11434/api/generate",
   "ollama_model": "qwen2.5:1.5b",
-  "ollama_timeout_s": 1.5,
+  "ollama_timeout_s": 4.0,
+  "feedback_enabled": true,
+  "feedback_mode": "notification",
   "request_microphone_on_start": true
 }
 ```
@@ -320,6 +381,31 @@ If audio is present but below threshold, lower:
 
 In default accuracy mode, VAD does not control final transcription. It only matters if `enable_chunk_transcription` is `true` or when using diagnostics.
 
+If recording fails immediately with:
+
+```text
+recording start failed: Could not open microphone input stream: ...
+```
+
+then macOS or PortAudio could not open the microphone. Common causes:
+
+- another app is using the microphone in a way that blocks access
+- macOS Microphone permission for `MyVoice.app` is missing or stale
+- the selected default input device changed or became unavailable
+- Core Audio is temporarily stuck
+
+Try:
+
+```bash
+my-voice --diagnose-audio
+```
+
+Then quit apps using the microphone, re-open `dist/MyVoice.app`, or remove and re-add `dist/MyVoice.app` under:
+
+```text
+System Settings -> Privacy & Security -> Microphone
+```
+
 ## Polished Cleanup
 
 Polished cleanup uses a small local LLM through Ollama. It is enabled by default in the current config:
@@ -376,22 +462,78 @@ The app calls Ollama locally:
 http://127.0.0.1:11434/api/generate
 ```
 
-If Ollama is not running, the model is missing, or the request exceeds `ollama_timeout_s`, the app falls back to deterministic cleanup.
+If Ollama is not running, the model is missing, or the request exceeds `ollama_timeout_s`, the app falls back to deterministic cleanup and logs:
+
+```text
+llm cleanup fallback: ...
+```
 
 No paid API call is used for polishing.
 
 ## Build Scripts
 
-Build app:
+Install dependencies, build the app, and register it as a long-running background app:
 
 ```bash
 scripts/install.sh
+```
+
+The installer also resets stale macOS permission entries for the local build, then prints next steps for checking status, watching logs, and re-enabling permissions.
+
+This creates `dist/MyVoice.app` and registers:
+
+```text
+~/Library/LaunchAgents/com.myvoice.app.plist
+```
+
+macOS will start MyVoice when you log in and restart it if it exits. After sleep/wake, the process should continue running; if Core Audio temporarily fails after wake, the app logs the microphone error and the next shortcut press can retry.
+
+The LaunchAgent starts `dist/MyVoice.app` through macOS `open`, not by running the internal executable directly. This keeps macOS privacy permissions tied to the same app bundle shown in System Settings.
+
+When permissions are reset, MyVoice is intentionally stopped. Re-enable MyVoice in Accessibility, Input Monitoring, and Microphone first, then start it:
+
+```bash
+scripts/restart_launch_agent.sh
+```
+
+After start, look for the `MV` menu-bar item. It changes to `REC` while recording and `WAIT` while processing.
+
+Build without installing the LaunchAgent:
+
+```bash
+scripts/install.sh --no-launch-agent
+```
+
+Build without resetting macOS permission entries:
+
+```bash
+scripts/install.sh --no-permission-reset
 ```
 
 Rebuild app only:
 
 ```bash
 scripts/build_macos_app.sh
+```
+
+Install or refresh only the LaunchAgent:
+
+```bash
+scripts/install_launch_agent.sh
+```
+
+Check background status:
+
+```bash
+scripts/launch_agent_status.sh
+```
+
+If LaunchAgent installation fails with `Bootstrap failed: 5`, the installer prints the exact `launchctl` output and diagnostic commands. This usually means launchd has stale state for the service or macOS rejected the plist/app path.
+
+Stop and remove the background LaunchAgent:
+
+```bash
+scripts/uninstall_launch_agent.sh
 ```
 
 Uninstall built app artifacts:
@@ -407,6 +549,81 @@ scripts/uninstall.sh --all
 ```
 
 macOS privacy permissions must be removed manually in System Settings.
+
+If the `MV` menu-bar item remains after uninstall, a stale MyVoice helper process is still running. Run:
+
+```bash
+scripts/uninstall_launch_agent.sh
+pkill -f "MyVoice.app/Contents/MacOS/MyVoice"
+```
+
+The uninstall scripts include this cleanup, but macOS can leave a menu-bar item visible briefly until the process fully exits.
+
+## Clean Reinstall
+
+Use this when macOS permissions look stale, the shortcut is not trusted, or you want a clean local setup.
+
+Uninstall everything:
+
+```bash
+scripts/uninstall.sh --all
+```
+
+Then manually remove or disable old `MyVoice` entries from:
+
+```text
+System Settings -> Privacy & Security -> Accessibility
+System Settings -> Privacy & Security -> Input Monitoring
+System Settings -> Privacy & Security -> Microphone
+```
+
+Install again:
+
+```bash
+scripts/install.sh
+```
+
+The installer builds the app and resets stale macOS permission entries. After reset, MyVoice is intentionally not started yet.
+
+Enable `MyVoice` in:
+
+```text
+System Settings -> Privacy & Security -> Accessibility
+System Settings -> Privacy & Security -> Input Monitoring
+System Settings -> Privacy & Security -> Microphone
+```
+
+Then start MyVoice:
+
+```bash
+scripts/restart_launch_agent.sh
+```
+
+You should see `MV` in the macOS menu bar. If you quit it from the `MV` menu, launch it again with:
+
+```bash
+scripts/restart_launch_agent.sh
+```
+
+Check status:
+
+```bash
+scripts/launch_agent_status.sh
+```
+
+Watch logs:
+
+```bash
+tail -f ~/Library/Logs/my-voice/app.log
+```
+
+Expected good startup: the log does not show:
+
+```text
+This process is not trusted!
+```
+
+Expected UI: the menu bar shows `MV` when idle, `REC` while recording, and `WAIT` while processing.
 
 ## Troubleshooting
 
@@ -425,8 +642,10 @@ pkill MyVoice
 Start app:
 
 ```bash
-open dist/MyVoice.app
+scripts/restart_launch_agent.sh
 ```
+
+The menu-bar item should appear as `MV`. If you do not see it, check hidden menu-bar items or menu-bar overflow utilities.
 
 If the shortcut does nothing, check for this log warning:
 
@@ -434,7 +653,27 @@ If the shortcut does nothing, check for this log warning:
 This process is not trusted! Input event monitoring will not be possible...
 ```
 
-If present, re-add `dist/MyVoice.app` in Accessibility and Input Monitoring.
+If present, re-add `dist/MyVoice.app` in both Accessibility and Input Monitoring. The app is ad-hoc signed during local builds, so macOS can keep a stale permission entry after a rebuild even when `MyVoice` appears enabled in System Settings.
+
+To clear stale macOS permission entries:
+
+```bash
+scripts/reset_macos_permissions.sh
+```
+
+Then restart the LaunchAgent and re-enable MyVoice in:
+
+```text
+System Settings -> Privacy & Security -> Accessibility
+System Settings -> Privacy & Security -> Input Monitoring
+System Settings -> Privacy & Security -> Microphone
+```
+
+After re-enabling permissions, restart MyVoice:
+
+```bash
+scripts/restart_launch_agent.sh
+```
 
 If transcription is accurate in the log but inserted text is missing characters, make sure:
 
@@ -444,12 +683,30 @@ If transcription is accurate in the log but inserted text is missing characters,
 }
 ```
 
+If the log shows an AppleScript paste failure like:
+
+```text
+insertion failed: ... osascript ... exited 1
+```
+
+then ASR and cleanup already succeeded, but macOS blocked the paste action. The app leaves the final text on the clipboard when clipboard insertion was attempted, so you can paste manually with `Cmd+V`.
+
+Check that `dist/MyVoice.app` is enabled under:
+
+```text
+System Settings -> Privacy & Security -> Accessibility
+System Settings -> Privacy & Security -> Input Monitoring
+```
+
 If transcription itself is wrong, check:
 
 ```text
 full session transcribed in ...ms: ...
 source: ...
 final: ...
+timing: ...
 ```
 
-`full session transcribed` is the raw Whisper result. `final` is the text after cleanup.
+`full session transcribed` is the raw Whisper result. `source` is the text sent into cleanup. `final` is the inserted text after deterministic and optional LLM cleanup. `timing` shows where latency was spent.
+
+If `timing` shows `llm_used=False`, the LLM did not return usable text. Check for a nearby `llm cleanup fallback:` line. A value like `llm_cleanup=1504ms` with a `1.5` second timeout usually means Ollama timed out.

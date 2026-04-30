@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -17,6 +19,16 @@ FILLER_PATTERNS = [
     r"\byou know\b",
     r"\bi mean\b",
 ]
+
+
+@dataclass(frozen=True)
+class CleanupResult:
+    text: str
+    deterministic_ms: float
+    llm_ms: float
+    total_ms: float
+    used_llm: bool
+    llm_error: str = ""
 
 
 def apply_spoken_corrections(text: str) -> str:
@@ -43,14 +55,30 @@ def deterministic_cleanup(text: str) -> str:
 
 
 def polished_cleanup(text: str, config: AppConfig) -> str:
+    return cleanup_with_metrics(text, config).text
+
+
+def cleanup_with_metrics(text: str, config: AppConfig) -> CleanupResult:
+    total_started = time.perf_counter()
+    deterministic_started = time.perf_counter()
     base = deterministic_cleanup(text)
+    deterministic_ms = (time.perf_counter() - deterministic_started) * 1000
     if config.cleanup_mode != "polished" or not config.ollama_enabled:
-        return base
+        total_ms = (time.perf_counter() - total_started) * 1000
+        return CleanupResult(base, deterministic_ms, 0.0, total_ms, False)
+
+    llm_started = time.perf_counter()
     try:
         polished = _ollama_cleanup(raw_text=text, draft_text=base, config=config)
-    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError):
-        return base
-    return polished or base
+    except (OSError, TimeoutError, urllib.error.URLError, json.JSONDecodeError) as exc:
+        llm_ms = (time.perf_counter() - llm_started) * 1000
+        total_ms = (time.perf_counter() - total_started) * 1000
+        return CleanupResult(base, deterministic_ms, llm_ms, total_ms, False, repr(exc))
+
+    llm_ms = (time.perf_counter() - llm_started) * 1000
+    total_ms = (time.perf_counter() - total_started) * 1000
+    final_text = polished or base
+    return CleanupResult(final_text, deterministic_ms, llm_ms, total_ms, bool(polished))
 
 
 def _ollama_cleanup(raw_text: str, draft_text: str, config: AppConfig) -> str:
@@ -142,14 +170,17 @@ def _apply_delete_last_word(text: str) -> str:
 
 
 def _apply_inline_replacements(text: str) -> str:
+    marker = r"(?:no not|i mean|actually|sorry|rather|no|not)"
+    separator = r"(?:\s+|\s*[,;:]\s*)"
+    optional_filler = r"(?:(?:oh|um|uh|erm)\b\s*[,;:]?\s*)?"
     text = re.sub(
-        r"\b(?P<old>\w+)\s+(?:no not|i mean|actually|sorry|rather|no|not)\s+(?P<new>\w+)\b",
+        rf"\b(?P<old>\w+){separator}{marker}{separator}{optional_filler}(?P<new>\w+)\b",
         lambda match: match.group("new"),
         text,
         flags=re.IGNORECASE,
     )
     text = re.sub(
-        r"\b(?P<old>\w+(?:\s+\w+){0,2})\s+(?:no not|i mean|actually|sorry|rather|no|not)\s+(?P<new>\w+(?:\s+\w+){0,2})(?=$|[,.!?;:])",
+        rf"\b(?P<old>\w+(?:\s+\w+){{0,2}}){separator}{marker}{separator}{optional_filler}(?P<new>\w+(?:\s+\w+){{0,2}})(?=$|[,.!?;:])",
         lambda match: match.group("new"),
         text,
         flags=re.IGNORECASE,

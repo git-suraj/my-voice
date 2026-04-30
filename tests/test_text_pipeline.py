@@ -37,3 +37,7 @@ def test_inline_actually_replacement() -> None:
 
 def test_inline_sorry_replacement() -> None:
     assert apply_spoken_corrections("schedule a meeting with John sorry Sarah") == "schedule a meeting with Sarah"
+
+
+def test_inline_sorry_replacement_with_punctuation_and_filler() -> None:
+    assert deterministic_cleanup("Yeah, let's plan for Sarah, sorry, oh, Roger.") == "Yeah, let's plan for Roger."

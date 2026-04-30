@@ -4,25 +4,31 @@ import argparse
 import multiprocessing
 from queue import Empty, Queue
 import signal
+import subprocess
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .assembly import assemble_chunks, reconcile_text
-from .audio import AudioCapture, AudioFrame
-from .cleanup import polished_cleanup
+from .audio import AudioCapture, AudioCaptureError, AudioFrame
+from .cleanup import cleanup_with_metrics
 from .config import AppConfig, default_config_path, load_config
 from .diagnostics import diagnose_audio
+from .feedback import show_feedback
 from .insertion import insert_text
 from .permissions import request_microphone_permission
 from .transcriber import TranscriptChunk, Transcriber
 from .vad import AudioChunk, VadChunker
 
 
+StatusCallback = Callable[[str], None]
+
+
 class DictationApp:
-    def __init__(self, config: AppConfig, keyboard_backend: Any) -> None:
+    def __init__(self, config: AppConfig, keyboard_backend: Any, status_callback: StatusCallback | None = None) -> None:
         self.config = config
         self.keyboard = keyboard_backend
+        self.status_callback = status_callback or (lambda state: None)
         self.frames: Queue[AudioFrame] = Queue()
         self.chunks: Queue[AudioChunk] = Queue()
         self.transcripts: Queue[TranscriptChunk] = Queue()
@@ -49,6 +55,7 @@ class DictationApp:
         self._shutdown = threading.Event()
         self._finalizing = threading.Event()
         self._session_started = 0.0
+        self._session_stopped = 0.0
         self._session_transcripts: list[TranscriptChunk] = []
         hotkey_keys = self.keyboard.HotKey.parse(config.shortcut)
         self._hotkey_keys = set(hotkey_keys)
@@ -62,6 +69,7 @@ class DictationApp:
             request_microphone_permission(self.config)
         print("Loading ASR model. First run may download model files...", flush=True)
         self.transcriber.load()
+        self.status_callback("idle")
         if self.config.enable_chunk_transcription:
             self.chunker.start()
             self.transcriber.start()
@@ -90,19 +98,41 @@ class DictationApp:
         self._finalizing.clear()
         if self.config.enable_chunk_transcription:
             self.chunker.begin_session()
-        self.audio.start()
+        try:
+            self.audio.start()
+        except AudioCaptureError as exc:
+            self.status_callback("error")
+            show_feedback("error", self.config)
+            print(f"recording start failed: {exc}", flush=True)
+            print(
+                "Check that no other app is exclusively using the microphone, then run `my-voice --diagnose-audio`.",
+                flush=True,
+            )
+            if self.config.enable_chunk_transcription:
+                self.chunker.end_session()
+            self._finalizing.clear()
+            return
         self._recording.set()
+        self.status_callback("recording")
+        show_feedback("start", self.config)
 
     def _on_hotkey_up(self) -> None:
         if not self._recording.is_set():
             return
         self._recording.clear()
         self._finalizing.set()
+        self.status_callback("processing")
         self.audio.stop()
+        self._session_stopped = time.perf_counter()
+        show_feedback("stop", self.config)
         full_session_audio = self.audio.session_audio()
         if self.config.enable_chunk_transcription:
+            chunk_wait_started = time.perf_counter()
             self.frames.join()
             self.chunker.end_session()
+            chunk_wait_ms = (time.perf_counter() - chunk_wait_started) * 1000
+            if chunk_wait_ms:
+                print(f"chunk finalization wait: {chunk_wait_ms:.0f}ms", flush=True)
         else:
             self._drain_frames()
         self._finalize_session(full_session_audio)
@@ -124,34 +154,77 @@ class DictationApp:
 
     def _finalize_session(self, full_session_audio) -> None:
         if self.config.enable_chunk_transcription:
+            chunk_transcript_wait_started = time.perf_counter()
             self.chunks.join()
+            chunk_transcript_wait_ms = (time.perf_counter() - chunk_transcript_wait_started) * 1000
+            if chunk_transcript_wait_ms:
+                print(f"chunk transcription wait: {chunk_transcript_wait_ms:.0f}ms", flush=True)
             self._collect_transcripts()
         self._finalizing.clear()
         full_text = ""
+        full_asr_ms = 0.0
         if self.config.final_transcription_mode == "full_session" and full_session_audio.size:
             started = time.perf_counter()
             full_text = self.transcriber.transcribe_samples(full_session_audio)
-            elapsed_ms = (time.perf_counter() - started) * 1000
-            print(f"full session transcribed in {elapsed_ms:.0f}ms: {full_text}", flush=True)
+            full_asr_ms = (time.perf_counter() - started) * 1000
+            print(f"full session transcribed in {full_asr_ms:.0f}ms: {full_text}", flush=True)
 
         if not self._session_transcripts and not full_text:
             print("No speech detected.")
+            self.status_callback("idle")
             return
-        assembled = assemble_chunks(self._session_transcripts)
-        source_text = full_text or assembled
-        reconciled = reconcile_text(source_text)
-        cleanup_started = time.perf_counter()
-        final_text = polished_cleanup(reconciled, self.config)
-        cleanup_ms = (time.perf_counter() - cleanup_started) * 1000
-        print(f"assembled: {assembled}", flush=True)
+        assemble_started = time.perf_counter()
+        assembled = assemble_chunks(self._session_transcripts) if self._session_transcripts else ""
+        assemble_ms = (time.perf_counter() - assemble_started) * 1000
+
+        reconcile_ms = 0.0
+        if full_text:
+            source_text = full_text
+        else:
+            reconcile_started = time.perf_counter()
+            source_text = reconcile_text(assembled)
+            reconcile_ms = (time.perf_counter() - reconcile_started) * 1000
+
+        cleanup = cleanup_with_metrics(source_text, self.config)
+        final_text = cleanup.text
+        if assembled:
+            print(f"assembled: {assembled}", flush=True)
         print(f"source: {source_text}", flush=True)
-        print(f"reconciled: {reconciled}", flush=True)
+        if cleanup.llm_error:
+            print(f"llm cleanup fallback: {cleanup.llm_error}", flush=True)
         print(f"final: {final_text}", flush=True)
         insert_started = time.perf_counter()
-        insert_text(final_text, self.config.text_insertion_method, self.config.restore_clipboard)
+        inserted = False
+        insertion_error = ""
+        try:
+            insert_text(final_text, self.config.text_insertion_method, self.config.restore_clipboard)
+            inserted = True
+        except subprocess.SubprocessError as exc:
+            insertion_error = _format_subprocess_error(exc)
+            print(f"insertion failed: {insertion_error}", flush=True)
+            print("The final text should still be on the clipboard if clipboard insertion was attempted.", flush=True)
         insert_ms = (time.perf_counter() - insert_started) * 1000
         total_ms = (time.perf_counter() - self._session_started) * 1000
-        print(f"Inserted {len(final_text)} chars. cleanup={cleanup_ms:.0f}ms insertion={insert_ms:.0f}ms total={total_ms:.0f}ms")
+        recording_ms = (self._session_stopped - self._session_started) * 1000
+        print(
+            "timing: "
+            f"recording={recording_ms:.0f}ms "
+            f"asr={full_asr_ms:.0f}ms "
+            f"assemble={assemble_ms:.0f}ms "
+            f"reconcile={reconcile_ms:.0f}ms "
+            f"deterministic_cleanup={cleanup.deterministic_ms:.0f}ms "
+            f"llm_cleanup={cleanup.llm_ms:.0f}ms "
+            f"cleanup_total={cleanup.total_ms:.0f}ms "
+            f"insertion={insert_ms:.0f}ms "
+            f"total={total_ms:.0f}ms "
+            f"llm_used={cleanup.used_llm} "
+            f"inserted={inserted}",
+            flush=True,
+        )
+        if inserted:
+            print(f"Inserted {len(final_text)} chars.", flush=True)
+            show_feedback("done", self.config)
+        self.status_callback("idle")
 
     def _collect_transcripts(self) -> None:
         while True:
@@ -181,7 +254,18 @@ class DictationApp:
                 return
 
 
-def main() -> None:
+def _format_subprocess_error(exc: subprocess.SubprocessError) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        detail = stderr or stdout
+        if detail:
+            return f"{exc.cmd} exited {exc.returncode}: {detail}"
+        return f"{exc.cmd} exited {exc.returncode}"
+    return str(exc)
+
+
+def main(status_callback: StatusCallback | None = None, keyboard_backend: Any | None = None) -> None:
     multiprocessing.freeze_support()
 
     parser = argparse.ArgumentParser(description="Local push-to-talk dictation for macOS")
@@ -195,16 +279,21 @@ def main() -> None:
         return
 
     print("Starting my-voice...", flush=True)
-    print("Loading macOS hotkey backend...", flush=True)
-    from pynput import keyboard
+    if keyboard_backend is None:
+        print("Loading macOS hotkey backend...", flush=True)
+        from pynput import keyboard
+    else:
+        print("Using preloaded macOS hotkey backend...", flush=True)
+        keyboard = keyboard_backend
 
-    app = DictationApp(config, keyboard)
+    app = DictationApp(config, keyboard, status_callback=status_callback)
 
     def handle_signal(signum, frame) -> None:
         app.stop()
 
-    signal.signal(signal.SIGINT, handle_signal)
-    signal.signal(signal.SIGTERM, handle_signal)
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, handle_signal)
+        signal.signal(signal.SIGTERM, handle_signal)
     try:
         app.run()
     finally:
