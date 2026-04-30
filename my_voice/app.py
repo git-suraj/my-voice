@@ -47,9 +47,20 @@ class DictationApp:
         self.transcriber = Transcriber(
             self.chunks,
             self.transcripts,
+            backend=config.asr_backend,
             model_name=config.asr_model,
             device=config.asr_device,
             compute_type=config.asr_compute_type,
+            sample_rate=config.sample_rate,
+            whisper_cpp_binary=config.whisper_cpp_binary,
+            whisper_cpp_model=config.whisper_cpp_model,
+            whisper_cpp_extra_args=config.whisper_cpp_extra_args,
+            whisper_cpp_server_binary=config.whisper_cpp_server_binary,
+            whisper_cpp_server_host=config.whisper_cpp_server_host,
+            whisper_cpp_server_port=config.whisper_cpp_server_port,
+            whisper_cpp_server_start=config.whisper_cpp_server_start,
+            whisper_cpp_server_timeout_s=config.whisper_cpp_server_timeout_s,
+            whisper_cpp_server_extra_args=config.whisper_cpp_server_extra_args,
         )
         self._recording = threading.Event()
         self._shutdown = threading.Event()
@@ -67,6 +78,7 @@ class DictationApp:
         if self.config.request_microphone_on_start:
             print("Checking microphone access...", flush=True)
             request_microphone_permission(self.config)
+        print(f"Loading ASR backend: {self.config.asr_backend}", flush=True)
         print("Loading ASR model. First run may download model files...", flush=True)
         self.transcriber.load()
         self.status_callback("idle")
@@ -165,9 +177,15 @@ class DictationApp:
         full_asr_ms = 0.0
         if self.config.final_transcription_mode == "full_session" and full_session_audio.size:
             started = time.perf_counter()
-            full_text = self.transcriber.transcribe_samples(full_session_audio)
+            try:
+                full_text = self.transcriber.transcribe_samples(full_session_audio)
+            except Exception as exc:
+                self.status_callback("error")
+                print(f"full session transcription failed: {exc!r}", flush=True)
+                full_text = ""
             full_asr_ms = (time.perf_counter() - started) * 1000
-            print(f"full session transcribed in {full_asr_ms:.0f}ms: {full_text}", flush=True)
+            if full_text:
+                print(f"full session transcribed in {full_asr_ms:.0f}ms: {full_text}", flush=True)
 
         if not self._session_transcripts and not full_text:
             print("No speech detected.")
@@ -209,6 +227,7 @@ class DictationApp:
         print(
             "timing: "
             f"recording={recording_ms:.0f}ms "
+            f"asr_backend={self.config.asr_backend} "
             f"asr={full_asr_ms:.0f}ms "
             f"assemble={assemble_ms:.0f}ms "
             f"reconcile={reconcile_ms:.0f}ms "

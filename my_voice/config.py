@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import os
 from pathlib import Path
@@ -23,9 +23,19 @@ class AppConfig:
     vad_preroll_ms: int = 500
     min_chunk_ms: int = 800
     chunk_overlap_ms: int = 250
-    asr_model: str = "small.en"
+    asr_backend: str = "faster-whisper"
+    asr_model: str = "small"
     asr_device: str = "cpu"
     asr_compute_type: str = "int8"
+    whisper_cpp_binary: str = "whisper-cli"
+    whisper_cpp_model: str = ""
+    whisper_cpp_extra_args: list[str] = field(default_factory=lambda: ["-nt"])
+    whisper_cpp_server_binary: str = "whisper-server"
+    whisper_cpp_server_host: str = "127.0.0.1"
+    whisper_cpp_server_port: int = 8178
+    whisper_cpp_server_start: bool = True
+    whisper_cpp_server_timeout_s: float = 30.0
+    whisper_cpp_server_extra_args: list[str] = field(default_factory=list)
     final_transcription_mode: str = "full_session"
     cleanup_mode: str = "polished"
     ollama_enabled: bool = True

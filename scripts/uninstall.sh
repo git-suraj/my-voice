@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 REMOVE_CONFIG=false
 REMOVE_LOGS=false
 REMOVE_VENV=false
+REMOVE_MODELS=false
 
 for arg in "$@"; do
   case "$arg" in
@@ -19,6 +20,9 @@ for arg in "$@"; do
     --venv)
       REMOVE_VENV=true
       ;;
+    --models)
+      REMOVE_MODELS=true
+      ;;
     --all)
       REMOVE_CONFIG=true
       REMOVE_LOGS=true
@@ -26,15 +30,16 @@ for arg in "$@"; do
       ;;
     -h|--help)
       cat <<'USAGE'
-Usage: scripts/uninstall.sh [--config] [--logs] [--venv] [--all]
+Usage: scripts/uninstall.sh [--config] [--logs] [--venv] [--models] [--all]
 
 Stops MyVoice and removes local app build artifacts.
 
 Options:
-  --config  also remove ~/.config/my-voice and ~/Library/Application Support/my-voice
+  --config  also remove app config, but preserve Application Support models
   --logs    also remove ~/Library/Logs/my-voice
   --venv    also remove .venv
-  --all     remove config, logs, and .venv too
+  --models  also remove ~/Library/Application Support/my-voice/models
+  --all     remove config, logs, and .venv too; models are still preserved
 
 macOS privacy permissions must be removed manually in System Settings.
 USAGE
@@ -59,7 +64,14 @@ rm -rf my_voice.egg-info
 
 if [[ "$REMOVE_CONFIG" == true ]]; then
   rm -rf "$HOME/.config/my-voice"
-  rm -rf "$HOME/Library/Application Support/my-voice"
+  app_support="$HOME/Library/Application Support/my-voice"
+  if [[ -d "$app_support" ]]; then
+    find "$app_support" -mindepth 1 -maxdepth 1 ! -name models -exec rm -rf {} +
+  fi
+fi
+
+if [[ "$REMOVE_MODELS" == true ]]; then
+  rm -rf "$HOME/Library/Application Support/my-voice/models"
 fi
 
 if [[ "$REMOVE_LOGS" == true ]]; then

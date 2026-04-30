@@ -93,6 +93,7 @@ Starting my-voice...
 Loading macOS hotkey backend...
 Config: /Users/.../Library/Application Support/my-voice/config.json
 Checking microphone access...
+Loading ASR backend: faster-whisper
 Loading ASR model. First run may download model files...
 Ready. Hold <shift>+<esc> to dictate. Press Ctrl+C to quit.
 ```
@@ -132,7 +133,8 @@ open dist/MyVoice.app
 Current default behavior:
 
 - Shortcut: `Shift+Esc`.
-- ASR model: `small.en`.
+- ASR backend: `faster-whisper`.
+- ASR model: `small`.
 - Cleanup: `polished`, with deterministic spoken-correction rules first and optional Ollama cleanup second.
 - Final transcription: full-session audio on release.
 - Insertion: clipboard paste.
@@ -154,7 +156,7 @@ final: ...
 Each dictation also prints a timing line:
 
 ```text
-timing: recording=...ms asr=...ms assemble=...ms reconcile=...ms deterministic_cleanup=...ms llm_cleanup=...ms cleanup_total=...ms insertion=...ms total=...ms llm_used=True
+timing: recording=...ms asr_backend=faster-whisper asr=...ms assemble=...ms reconcile=...ms deterministic_cleanup=...ms llm_cleanup=...ms cleanup_total=...ms insertion=...ms total=...ms llm_used=True
 ```
 
 In the default full-session path, `reconcile=0ms` because the raw full-session Whisper result goes directly into cleanup. Reconciliation is only used when the app has to fall back to assembled chunk text.
@@ -229,9 +231,19 @@ Current important settings:
 ```json
 {
   "shortcut": "<shift>+<esc>",
-  "asr_model": "small.en",
+  "asr_backend": "faster-whisper",
+  "asr_model": "small",
   "asr_device": "cpu",
   "asr_compute_type": "int8",
+  "whisper_cpp_binary": "whisper-cli",
+  "whisper_cpp_model": "",
+  "whisper_cpp_extra_args": ["-nt"],
+  "whisper_cpp_server_binary": "whisper-server",
+  "whisper_cpp_server_host": "127.0.0.1",
+  "whisper_cpp_server_port": 8178,
+  "whisper_cpp_server_start": true,
+  "whisper_cpp_server_timeout_s": 30.0,
+  "whisper_cpp_server_extra_args": [],
   "final_transcription_mode": "full_session",
   "cleanup_mode": "polished",
   "text_insertion_method": "clipboard",
@@ -273,15 +285,92 @@ For best ASR accuracy, keep:
 }
 ```
 
-If accuracy is still not good enough, try a larger Whisper model:
+The default `small` model is multilingual and is a latency/accuracy compromise for Indian English, names, and mixed phrasing. If accuracy is still not good enough, try a larger Whisper model:
 
 ```json
 {
-  "asr_model": "medium.en"
+  "asr_model": "medium"
 }
 ```
 
 Tradeoff: larger models are slower and use more CPU/RAM.
+
+## ASR Backends
+
+MyVoice supports three ASR backend modes:
+
+```text
+faster-whisper      default Python backend, simple setup, CPU-friendly with int8
+whisper-cpp         simple whisper.cpp CLI backend, starts whisper-cli per recording
+whisper-cpp-server  deeper whisper.cpp backend, keeps whisper-server/model warm
+```
+
+The app pipeline stays the same for all three:
+
+```text
+record audio -> transcribe -> deterministic cleanup -> optional Ollama cleanup -> insert text
+```
+
+Only the ASR implementation changes.
+
+Default faster-whisper config:
+
+```json
+{
+  "asr_backend": "faster-whisper",
+  "asr_model": "small",
+  "asr_device": "cpu",
+  "asr_compute_type": "int8"
+}
+```
+
+Optional whisper.cpp config:
+
+```json
+{
+  "asr_backend": "whisper-cpp",
+  "whisper_cpp_binary": "/path/to/whisper-cli",
+  "whisper_cpp_model": "/path/to/ggml-small.bin",
+  "whisper_cpp_extra_args": ["-nt"]
+}
+```
+
+`whisper_cpp_binary` must point to a working `whisper-cli` executable. `whisper_cpp_model` must point to a local whisper.cpp model file. The default extra arg `-nt` disables timestamps so MyVoice receives plain text.
+
+This mode shells out to `whisper-cli` for each final recording. That is useful for comparing accuracy and total timing, but it is not the lowest-latency design because the process starts for every dictation.
+
+Deeper whisper.cpp server config:
+
+```json
+{
+  "asr_backend": "whisper-cpp-server",
+  "whisper_cpp_server_binary": "/path/to/whisper-server",
+  "whisper_cpp_model": "/path/to/ggml-small.bin",
+  "whisper_cpp_server_host": "127.0.0.1",
+  "whisper_cpp_server_port": 8178,
+  "whisper_cpp_server_start": true,
+  "whisper_cpp_server_timeout_s": 30.0,
+  "whisper_cpp_server_extra_args": []
+}
+```
+
+In `whisper-cpp-server` mode, MyVoice checks `http://127.0.0.1:8178` on startup. If nothing is listening and `whisper_cpp_server_start` is `true`, it starts `whisper-server` with the configured model and waits for it to become ready. Each recording is sent to:
+
+```text
+POST /inference
+multipart file=<temporary wav>
+response_format=json
+language=en
+temperature=0.0
+```
+
+This keeps the ASR model loaded between dictations, which should remove most process/model startup overhead compared with `whisper-cpp`.
+
+Use the log timing line to compare:
+
+```text
+timing: recording=...ms asr_backend=whisper-cpp-server asr=...ms cleanup_total=...ms insertion=...ms total=...ms
+```
 
 If you need to debug whether an error came from Whisper or cleanup, temporarily set:
 
@@ -570,6 +659,20 @@ Remove build artifacts plus config, logs, and `.venv`:
 scripts/uninstall.sh --all
 ```
 
+`--all` preserves whisper.cpp model files under:
+
+```text
+~/Library/Application Support/my-voice/models/
+```
+
+This avoids re-downloading large `ggml-*.bin` files after every clean reinstall.
+
+To explicitly remove those model files too:
+
+```bash
+scripts/uninstall.sh --models
+```
+
 macOS privacy permissions must be removed manually in System Settings.
 
 If the `MV` menu-bar item remains after uninstall, a stale MyVoice helper process is still running. Run:
@@ -589,6 +692,12 @@ Uninstall everything:
 
 ```bash
 scripts/uninstall.sh --all
+```
+
+This removes the app build, config, logs, and `.venv`, but keeps downloaded whisper.cpp models in:
+
+```text
+~/Library/Application Support/my-voice/models/
 ```
 
 Then manually remove or disable old `MyVoice` entries from:

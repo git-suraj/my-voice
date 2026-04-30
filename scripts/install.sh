@@ -9,6 +9,8 @@ RESET_PERMISSIONS=true
 SETUP_OLLAMA=true
 OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:1.5b}"
 OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
+MODEL_DIR="$HOME/Library/Application Support/my-voice/models"
+WHISPER_CPP_MODEL="${WHISPER_CPP_MODEL:-$MODEL_DIR/ggml-small.bin}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -36,6 +38,8 @@ Options:
 Environment:
   OLLAMA_MODEL           model to pull/warm, default qwen2.5:1.5b
   OLLAMA_URL             Ollama base URL, default http://127.0.0.1:11434
+  WHISPER_CPP_MODEL      whisper.cpp model path, default:
+                         ~/Library/Application Support/my-voice/models/ggml-small.bin
 USAGE
       exit 0
       ;;
@@ -56,6 +60,8 @@ if [[ ! -x ".venv/bin/python" ]]; then
 fi
 
 uv pip install -e ".[app]"
+
+mkdir -p "$MODEL_DIR"
 
 if [[ "$SETUP_OLLAMA" == true ]]; then
   if ! command -v ollama >/dev/null 2>&1; then
@@ -147,6 +153,15 @@ Next steps:
 
   5. Watch the app log:
      tail -f "$HOME/Library/Logs/my-voice/app.log"
+
+  6. whisper.cpp server testing:
+     model path: $WHISPER_CPP_MODEL
+
+     The install script preserves files in:
+       $MODEL_DIR
+
+     If you enable asr_backend=whisper-cpp-server, make sure the configured
+     ggml model file exists there before restarting MyVoice.
 
 Uninstall:
   scripts/uninstall.sh
