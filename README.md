@@ -63,6 +63,8 @@ chmod +x scripts/install.sh
 scripts/install.sh
 ```
 
+By default, `scripts/install.sh` also checks Ollama, starts `ollama serve` if needed, pulls `qwen2.5:1.5b` if missing, and warms the model for polished cleanup.
+
 That script runs:
 
 ```bash
@@ -432,6 +434,8 @@ brew install --cask ollama
 open -a Ollama
 ```
 
+`scripts/install.sh` can start the Ollama server automatically after Ollama is installed.
+
 Or run the server manually:
 
 ```bash
@@ -442,6 +446,12 @@ Pull the default cleanup model:
 
 ```bash
 ollama pull qwen2.5:1.5b
+```
+
+`scripts/install.sh` also pulls and warms this model by default. To skip Ollama setup:
+
+```bash
+scripts/install.sh --no-ollama
 ```
 
 Check that Ollama is reachable:
@@ -478,7 +488,7 @@ Install dependencies, build the app, and register it as a long-running backgroun
 scripts/install.sh
 ```
 
-The installer also resets stale macOS permission entries for the local build, then prints next steps for checking status, watching logs, and re-enabling permissions.
+The installer also checks Ollama/Qwen, resets stale macOS permission entries for the local build, then prints next steps for checking status, watching logs, and re-enabling permissions.
 
 This creates `dist/MyVoice.app` and registers:
 
@@ -508,6 +518,18 @@ Build without resetting macOS permission entries:
 
 ```bash
 scripts/install.sh --no-permission-reset
+```
+
+Build without checking or starting Ollama:
+
+```bash
+scripts/install.sh --no-ollama
+```
+
+Use a different Ollama cleanup model:
+
+```bash
+OLLAMA_MODEL=qwen2.5:3b scripts/install.sh
 ```
 
 Rebuild app only:

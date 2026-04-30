@@ -6,6 +6,9 @@ cd "$ROOT_DIR"
 
 INSTALL_LAUNCH_AGENT=true
 RESET_PERMISSIONS=true
+SETUP_OLLAMA=true
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen2.5:1.5b}"
+OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
 
 for arg in "$@"; do
   case "$arg" in
@@ -15,9 +18,12 @@ for arg in "$@"; do
     --no-permission-reset)
       RESET_PERMISSIONS=false
       ;;
+    --no-ollama)
+      SETUP_OLLAMA=false
+      ;;
     -h|--help)
       cat <<'USAGE'
-Usage: scripts/install.sh [--no-launch-agent] [--no-permission-reset]
+Usage: scripts/install.sh [--no-launch-agent] [--no-permission-reset] [--no-ollama]
 
 Installs Python/app dependencies, builds dist/MyVoice.app, and installs the
 LaunchAgent so MyVoice starts on login and restarts if it exits.
@@ -25,6 +31,11 @@ LaunchAgent so MyVoice starts on login and restarts if it exits.
 Options:
   --no-launch-agent      build the app without installing the LaunchAgent
   --no-permission-reset  keep existing macOS privacy permission entries
+  --no-ollama            skip Ollama/Qwen readiness checks
+
+Environment:
+  OLLAMA_MODEL           model to pull/warm, default qwen2.5:1.5b
+  OLLAMA_URL             Ollama base URL, default http://127.0.0.1:11434
 USAGE
       exit 0
       ;;
@@ -45,6 +56,56 @@ if [[ ! -x ".venv/bin/python" ]]; then
 fi
 
 uv pip install -e ".[app]"
+
+if [[ "$SETUP_OLLAMA" == true ]]; then
+  if ! command -v ollama >/dev/null 2>&1; then
+    cat >&2 <<'OLLAMA_MISSING'
+Ollama is required for polished cleanup but was not found.
+
+Install it first:
+  brew install --cask ollama
+
+Then rerun:
+  scripts/install.sh
+
+Or skip this check:
+  scripts/install.sh --no-ollama
+OLLAMA_MISSING
+    exit 1
+  fi
+
+  if ! curl -fsS "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
+    echo "Starting Ollama server..."
+    mkdir -p "$HOME/Library/Logs/my-voice"
+    nohup ollama serve >>"$HOME/Library/Logs/my-voice/ollama.log" 2>&1 &
+    for _ in {1..30}; do
+      if curl -fsS "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+    done
+  fi
+
+  if ! curl -fsS "$OLLAMA_URL/api/tags" >/dev/null 2>&1; then
+    echo "Ollama did not become reachable at $OLLAMA_URL" >&2
+    echo "Check: $HOME/Library/Logs/my-voice/ollama.log" >&2
+    exit 1
+  fi
+
+  if ! ollama list | awk '{print $1}' | grep -Fx "$OLLAMA_MODEL" >/dev/null 2>&1; then
+    echo "Pulling Ollama model: $OLLAMA_MODEL"
+    ollama pull "$OLLAMA_MODEL"
+  fi
+
+  if ! ollama ps | awk '{print $1}' | grep -Fx "$OLLAMA_MODEL" >/dev/null 2>&1; then
+    echo "Warming Ollama model: $OLLAMA_MODEL"
+    curl -fsS "$OLLAMA_URL/api/generate" \
+      -H "Content-Type: application/json" \
+      -d "{\"model\":\"$OLLAMA_MODEL\",\"prompt\":\"\",\"stream\":false,\"keep_alive\":\"30m\"}" \
+      >/dev/null
+  fi
+fi
+
 chmod +x scripts/build_macos_app.sh
 scripts/build_macos_app.sh
 
@@ -66,8 +127,9 @@ App:
   $ROOT_DIR/dist/MyVoice.app
 
 Next steps:
-  1. Make sure Ollama is running if you want polished cleanup:
-     ollama serve
+  1. Ollama polished cleanup:
+     model: $OLLAMA_MODEL
+     status: ollama ps
 
   2. Re-add MyVoice in:
      System Settings -> Privacy & Security -> Accessibility

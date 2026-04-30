@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
+import fcntl
 import os
 from pathlib import Path
 import threading
@@ -15,6 +16,14 @@ def run() -> None:
         str(Path.home() / "Library" / "Application Support" / "my-voice" / "config.json"),
     )
     log_path = _log_path()
+    lock_file = _lock_path().open("w", encoding="utf-8")
+    try:
+        fcntl.lockf(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        with log_path.open("a", encoding="utf-8") as log_file:
+            with redirect_stdout(log_file), redirect_stderr(log_file):
+                print("Another MyVoice instance is already running. Exiting.", flush=True)
+        return
 
     with log_path.open("a", encoding="utf-8") as log_file:
         with redirect_stdout(log_file), redirect_stderr(log_file):
@@ -43,6 +52,17 @@ def _log_path() -> Path:
         fallback_dir = Path(tempfile.gettempdir()) / "my-voice"
         fallback_dir.mkdir(parents=True, exist_ok=True)
         return fallback_dir / "app.log"
+
+
+def _lock_path() -> Path:
+    preferred_dir = Path.home() / "Library" / "Application Support" / "my-voice"
+    try:
+        preferred_dir.mkdir(parents=True, exist_ok=True)
+        return preferred_dir / "myvoice.lock"
+    except OSError:
+        fallback_dir = Path(tempfile.gettempdir()) / "my-voice"
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_dir / "myvoice.lock"
 
 
 if __name__ == "__main__":
