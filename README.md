@@ -5,10 +5,11 @@ Local push-to-talk dictation for macOS.
 The current default is **accuracy-first**:
 
 ```text
-hold Shift+Esc
+triple-tap Shift
 record the full session audio
-release Shift+Esc
+press Shift once to stop
 transcribe the full audio once with local Whisper
+apply personal corrections
 apply deterministic cleanup and optional local LLM cleanup
 insert with clipboard paste
 ```
@@ -95,7 +96,7 @@ Config: /Users/.../Library/Application Support/my-voice/config.json
 Checking microphone access...
 Loading ASR backend: faster-whisper
 Loading ASR model. First run may download model files...
-Ready. Hold <shift>+<esc> to dictate. Press Ctrl+C to quit.
+Ready. Triple-tap Shift to record. Press Shift again to stop. Press Ctrl+C to quit.
 ```
 
 Grant permissions to `MyVoice.app`:
@@ -108,7 +109,7 @@ Microphone permission is different from Accessibility/Input Monitoring: macOS us
 
 If you rebuild the app, macOS may treat it as a new binary. Remove the old `MyVoice` entry from Accessibility/Input Monitoring, add the current `dist/MyVoice.app` again, then quit and reopen it.
 
-The app cannot detect the global shortcut until this warning disappears from the log:
+The app cannot detect the Shift trigger until this warning disappears from the log:
 
 ```text
 This process is not trusted! Input event monitoring will not be possible...
@@ -125,17 +126,18 @@ open dist/MyVoice.app
 
 1. Start `MyVoice.app`.
 2. Click into a text field in another app.
-3. Hold `Shift+Esc`.
+3. Triple-tap `Shift`.
 4. Speak.
-5. Release `Shift+Esc`.
+5. Press `Shift` once to stop.
 6. Wait for the final transcription to be inserted.
 
 Current default behavior:
 
-- Shortcut: `Shift+Esc`.
+- Trigger: triple-tap `Shift` to start, single `Shift` tap to stop.
 - ASR backend: `faster-whisper`.
 - ASR model: `small`.
 - Cleanup: `polished`, with deterministic spoken-correction rules first and optional Ollama cleanup second.
+- Personal corrections: enabled, editable from the `MV` menu.
 - Final transcription: full-session audio on release.
 - Insertion: clipboard paste.
 - Polished LLM cleanup: enabled when Ollama is running; otherwise the app falls back to deterministic cleanup.
@@ -172,7 +174,17 @@ WAIT  processing/transcribing/cleaning
 ERR   error
 ```
 
-The menu-bar item also has a `Quit MyVoice` menu item.
+The menu-bar item also has:
+
+```text
+Record    Triple-tap Shift
+Stop      Shift
+Personal Corrections...
+Open Logs    open ~/Library/Logs/my-voice in Finder
+Quit MyVoice
+```
+
+The menu `Record` and `Stop` items are useful when your hands are not free for the keyboard trigger. `Personal Corrections...` opens a local editor page for terms that should always be replaced before cleanup.
 
 If you quit from the `MV` menu, start it again with:
 
@@ -230,7 +242,10 @@ Current important settings:
 
 ```json
 {
-  "shortcut": "<shift>+<esc>",
+  "trigger_mode": "triple_tap_shift",
+  "shift_tap_count": 3,
+  "shift_tap_window_ms": 1500,
+  "shift_stop_grace_ms": 450,
   "asr_backend": "faster-whisper",
   "asr_model": "small",
   "asr_device": "cpu",
@@ -247,6 +262,12 @@ Current important settings:
   "final_transcription_mode": "full_session",
   "cleanup_mode": "polished",
   "text_insertion_method": "clipboard",
+  "mark_clipboard_transient": true,
+  "restore_clipboard": true,
+  "refocus_before_insert": true,
+  "personal_corrections_enabled": true,
+  "personal_corrections_path": "",
+  "personal_corrections_editor_port": 8765,
   "enable_chunk_transcription": false,
   "vad_backend": "energy",
   "vad_energy_threshold": 0.012,
@@ -264,15 +285,63 @@ Current important settings:
 }
 ```
 
-Shortcut examples accepted by the current hotkey backend:
+Trigger settings:
+
+- `trigger_mode`: currently `triple_tap_shift`.
+- `shift_tap_count`: number of standalone Shift taps needed to start recording.
+- `shift_tap_window_ms`: maximum time window for the Shift taps.
+- `shift_stop_grace_ms`: short delay after starting so the final start tap does not immediately stop recording.
+
+## Personal Corrections
+
+Use this for words or phrases that Whisper often hears incorrectly.
+
+Open the editor from:
 
 ```text
-<shift>+<esc>
-<ctrl>+<alt>+1
-<f1>
+MV -> Personal Corrections...
 ```
 
-The macOS `Fn` key is not exposed by the current hotkey backend, so shortcuts such as `Fn+Esc` cannot be configured directly.
+The editor runs locally at `http://127.0.0.1:8765/` and saves beside the app config:
+
+```text
+~/Library/Application Support/my-voice/config.json
+~/Library/Application Support/my-voice/corrections.json
+```
+
+Example corrections:
+
+```text
+cong          -> Kong
+kong connect  -> Kong Konnect
+control plane -> Control Plane
+cube ctl      -> kubectl
+```
+
+The app applies corrections before deterministic cleanup and LLM cleanup:
+
+```text
+ASR transcript -> personal corrections -> deterministic cleanup -> optional LLM cleanup -> insertion
+```
+
+Corrections can be single words or multi-word phrases. They use whole-word and whole-phrase matching. This means `cong` can become `Kong`, but `congress` will not become `Kongress`. Longer phrases are applied first, so `kong connect` can become `Kong Konnect` before a separate `kong` rule is considered.
+
+Config:
+
+```json
+{
+  "personal_corrections_enabled": true,
+  "personal_corrections_path": "",
+  "personal_corrections_editor_port": 8765
+}
+```
+
+Clipboard insertion settings:
+
+- `text_insertion_method`: `clipboard` is the most reliable option on macOS. `direct` uses AppleScript keystrokes and avoids the clipboard, but it is less reliable for long text and punctuation. `auto` tries direct insertion first and falls back to clipboard paste.
+- `mark_clipboard_transient`: adds macOS pasteboard marker types to MyVoice's temporary clipboard entry so clipboard managers such as Maccy can ignore dictated text. The real paste payload remains normal string text. The marker types are `org.nspasteboard.TransientType`, `org.nspasteboard.AutoGeneratedType`, and `org.nspasteboard.ConcealedType`.
+- `restore_clipboard`: restores the previous clipboard text after MyVoice pastes the dictated text. The restored text is also marked as a transient restore to avoid duplicate clipboard-history entries where supported.
+- `refocus_before_insert`: remembers the last non-MyVoice foreground app and reactivates it before pasting. This is important when you stop recording from the `MV` menu, because opening the menu can steal focus from the text field.
 
 ## Accuracy Tuning
 
@@ -384,9 +453,17 @@ If you need to debug whether an error came from Whisper or cleanup, temporarily 
 
 ## Spoken Corrections
 
-MyVoice applies simple spoken correction commands before final cleanup.
+MyVoice uses a hybrid correction strategy:
 
-Supported commands:
+```text
+deterministic cleanup for safe local edits
+LLM cleanup for broader natural self-corrections
+validation before accepting the LLM output
+```
+
+The deterministic layer is intentionally conservative. It handles commands that are predictable and low-risk.
+
+Deterministic commands:
 
 ```text
 scratch that
@@ -396,9 +473,7 @@ delete last sentence
 actually
 sorry
 no
-not
 rather
-I mean
 ```
 
 Examples:
@@ -419,33 +494,72 @@ send it to John actually Sarah
 
 These rules are deterministic and run locally.
 
-In `polished` mode, Ollama receives both:
+Broader corrections are handled in `polished` mode by Ollama, because they require semantic understanding:
+
+```text
+sorry, I mean ...
+sorry, I meant ...
+that's not what I meant ...
+what I meant was ...
+make that ...
+instead ...
+actually ...
+```
+
+Ollama receives both:
 
 ```text
 Raw transcript
 Rule-cleaned draft
 ```
 
-The prompt asks the model to resolve broader natural self-corrections, including:
+The prompt asks the model to return structured JSON:
 
-```text
-that's not what I meant
-what I meant was
-make that
-instead
+```json
+{
+  "final_text": "...",
+  "corrections_applied": true,
+  "confidence": "high"
+}
 ```
 
 Examples intended for polished mode:
 
 ```text
-I need the report by Tuesday that's not what I meant by Thursday
--> I need the report by Thursday.
+Schedule a meeting with Sara. Sorry, I meant Roger at 10 a.m. tomorrow.
+-> Schedule a meeting with Roger at 10 a.m. tomorrow.
 
-book a flight to London make that Paris next week
--> Book a flight to Paris next week.
+Okay, so I'm just checking if this is working. Sorry, I mean if this is not working.
+-> Okay, so I'm just checking if this is not working.
 ```
 
-The LLM prompt is intentionally conservative: it should apply corrections and formatting, but not summarize, expand, or invent details.
+The app validates the LLM response before accepting it. It rejects empty output, malformed JSON, low-confidence corrections, suspiciously large drops, and outputs that still contain unapplied correction phrases such as `I mean`.
+
+The LLM is also responsible for removing trailing meta-speech when you abandon a thought or think out loud at the end of a dictation. For example:
+
+```text
+Make sure that the README is updated even with the blank audio thing. There was another thing which I wanted to do which is... What was that? Yeah, I think that's it.
+-> Make sure that the README is updated even with the blank audio thing.
+```
+
+The LLM also handles spoken lists.
+
+Numbered list example:
+
+```text
+Okay, number one I want to review the deck. Number two I want to send the notes.
+-> 1. I want to review the deck.
+   2. I want to send the notes.
+```
+
+Task list example:
+
+```text
+I want to make a house then paint it.
+-> I want to:
+   - make a house
+   - paint it
+```
 
 ## Audio Diagnostics
 
@@ -585,7 +699,7 @@ This creates `dist/MyVoice.app` and registers:
 ~/Library/LaunchAgents/com.myvoice.app.plist
 ```
 
-macOS will start MyVoice when you log in and restart it if it exits. After sleep/wake, the process should continue running; if Core Audio temporarily fails after wake, the app logs the microphone error and the next shortcut press can retry.
+macOS will start MyVoice when you log in and restart it if it exits. After sleep/wake, the process should continue running; if Core Audio temporarily fails after wake, the app logs the microphone error and the next trigger can retry.
 
 The LaunchAgent starts `dist/MyVoice.app` through macOS `open`, not by running the internal executable directly. This keeps macOS privacy permissions tied to the same app bundle shown in System Settings.
 
@@ -686,7 +800,7 @@ The uninstall scripts include this cleanup, but macOS can leave a menu-bar item 
 
 ## Clean Reinstall
 
-Use this when macOS permissions look stale, the shortcut is not trusted, or you want a clean local setup.
+Use this when macOS permissions look stale, the keyboard trigger is not trusted, or you want a clean local setup.
 
 Uninstall everything:
 
@@ -778,7 +892,7 @@ scripts/restart_launch_agent.sh
 
 The menu-bar item should appear as `MV`. If you do not see it, check hidden menu-bar items or menu-bar overflow utilities.
 
-If the shortcut does nothing, check for this log warning:
+If the Shift trigger does nothing, check for this log warning:
 
 ```text
 This process is not trusted! Input event monitoring will not be possible...

@@ -14,7 +14,7 @@ SOUNDS = {
 }
 
 NOTIFICATIONS = {
-    "start": ("Recording", "Release shortcut to stop"),
+    "start": ("Recording", "Press Shift to stop"),
     "stop": ("Processing", "Transcribing and cleaning text"),
     "error": ("Microphone error", "Could not start recording"),
     "done": ("Inserted", "Dictation complete"),

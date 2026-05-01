@@ -4,6 +4,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import fcntl
 import os
 from pathlib import Path
+from queue import Queue
 import threading
 import tempfile
 
@@ -33,12 +34,13 @@ def run() -> None:
 
     from my_voice.status_bar import StatusBarController
 
-    status_bar = StatusBarController()
+    control_events: Queue[str] = Queue()
+    status_bar = StatusBarController(control_events)
 
     def run_app() -> None:
         with log_path.open("a", encoding="utf-8") as log_file:
             with redirect_stdout(log_file), redirect_stderr(log_file):
-                main(status_callback=status_bar.set_state, keyboard_backend=keyboard)
+                main(status_callback=status_bar.set_state, keyboard_backend=keyboard, control_events=control_events)
 
     status_bar.run(lambda: threading.Thread(target=run_app, name="my-voice-main", daemon=True).start())
 

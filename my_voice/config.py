@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import dataclasses
 import json
 import os
 from pathlib import Path
@@ -12,7 +13,10 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 
 @dataclass(slots=True)
 class AppConfig:
-    shortcut: str = "<shift>+<esc>"
+    trigger_mode: str = "triple_tap_shift"
+    shift_tap_count: int = 3
+    shift_tap_window_ms: int = 1500
+    shift_stop_grace_ms: int = 450
     sample_rate: int = 16_000
     channels: int = 1
     frame_ms: int = 200
@@ -44,6 +48,11 @@ class AppConfig:
     ollama_timeout_s: float = 4.0
     text_insertion_method: str = "clipboard"
     restore_clipboard: bool = True
+    mark_clipboard_transient: bool = True
+    refocus_before_insert: bool = True
+    personal_corrections_enabled: bool = True
+    personal_corrections_path: str = ""
+    personal_corrections_editor_port: int = 8765
     feedback_enabled: bool = True
     feedback_mode: str = "notification"
     debug_full_session_buffer: bool = True
@@ -71,7 +80,9 @@ def load_config(path: Path | None = None) -> AppConfig:
 
     defaults = asdict(AppConfig())
     defaults.update(raw)
-    return AppConfig(**defaults)
+    config_fields = {field.name for field in dataclasses.fields(AppConfig)}
+    filtered = {key: value for key, value in defaults.items() if key in config_fields}
+    return AppConfig(**filtered)
 
 
 def save_config(config: AppConfig, path: Path | None = None) -> None:

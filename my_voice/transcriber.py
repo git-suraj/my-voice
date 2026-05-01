@@ -132,7 +132,7 @@ class Transcriber(threading.Thread):
             condition_on_previous_text=False,
             temperature=0,
         )
-        return " ".join(segment.text.strip() for segment in segments).strip()
+        return _clean_asr_text(" ".join(segment.text.strip() for segment in segments).strip())
 
     def _validate_whisper_cpp(self) -> None:
         binary_path = Path(self.whisper_cpp_binary).expanduser()
@@ -210,7 +210,7 @@ class Transcriber(threading.Thread):
                 *self.whisper_cpp_extra_args,
             ]
             result = subprocess.run(command, check=True, capture_output=True, text=True)
-        return _clean_whisper_cpp_output(result.stdout)
+        return _clean_asr_text(_clean_whisper_cpp_output(result.stdout))
 
     def _transcribe_with_whisper_cpp_server(self, samples: np.ndarray) -> str:
         samples = np.asarray(samples, dtype=np.float32)
@@ -234,7 +234,7 @@ class Transcriber(threading.Thread):
         )
         with request.urlopen(req, timeout=self.whisper_cpp_server_timeout_s) as response:
             body = response.read().decode("utf-8", errors="replace")
-        return _parse_whisper_cpp_server_response(body)
+        return _clean_asr_text(_parse_whisper_cpp_server_response(body))
 
     def _is_whisper_cpp_server_ready(self) -> bool:
         req = request.Request(self._server_base_url(), method="GET")
@@ -269,6 +269,27 @@ def _clean_whisper_cpp_output(output: str) -> str:
         if line:
             lines.append(line)
     return " ".join(lines).strip()
+
+
+def _clean_asr_text(text: str) -> str:
+    cleaned = text.strip()
+    if _is_blank_audio_marker(cleaned):
+        return ""
+    cleaned = re.sub(
+        r"\[(?:blank[_\s-]*audio|no[_\s-]*speech|silence)\]",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _is_blank_audio_marker(text: str) -> bool:
+    return re.fullmatch(
+        r"\[\s*(?:blank[_\s-]*audio|no[_\s-]*speech|silence)\s*\]",
+        text,
+        flags=re.IGNORECASE,
+    ) is not None
 
 
 def _build_multipart_request(path: str, fields: dict[str, str]) -> tuple[bytes, str]:
@@ -306,5 +327,5 @@ def _parse_whisper_cpp_server_response(body: str) -> str:
     if isinstance(parsed, dict):
         text = parsed.get("text")
         if isinstance(text, str):
-            return text.strip()
+            return _clean_asr_text(text)
     return _clean_whisper_cpp_output(body)

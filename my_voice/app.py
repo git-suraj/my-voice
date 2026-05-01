@@ -15,20 +15,30 @@ from .cleanup import cleanup_with_metrics
 from .config import AppConfig, default_config_path, load_config
 from .diagnostics import diagnose_audio
 from .feedback import show_feedback
+from .focus import activate_bundle_id, frontmost_bundle_id
 from .insertion import insert_text
 from .permissions import request_microphone_permission
+from .personal_corrections import apply_personal_corrections
 from .transcriber import TranscriptChunk, Transcriber
 from .vad import AudioChunk, VadChunker
 
 
 StatusCallback = Callable[[str], None]
+OWN_BUNDLE_IDS = {"com.local.myvoice"}
 
 
 class DictationApp:
-    def __init__(self, config: AppConfig, keyboard_backend: Any, status_callback: StatusCallback | None = None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        keyboard_backend: Any,
+        status_callback: StatusCallback | None = None,
+        control_events: Queue[str] | None = None,
+    ) -> None:
         self.config = config
         self.keyboard = keyboard_backend
         self.status_callback = status_callback or (lambda state: None)
+        self.control_events = control_events
         self.frames: Queue[AudioFrame] = Queue()
         self.chunks: Queue[AudioChunk] = Queue()
         self.transcripts: Queue[TranscriptChunk] = Queue()
@@ -68,9 +78,13 @@ class DictationApp:
         self._session_started = 0.0
         self._session_stopped = 0.0
         self._session_transcripts: list[TranscriptChunk] = []
-        hotkey_keys = self.keyboard.HotKey.parse(config.shortcut)
-        self._hotkey_keys = set(hotkey_keys)
-        self._hotkey = self.keyboard.HotKey(hotkey_keys, self._on_hotkey_down)
+        self._target_bundle_id = ""
+        self._last_target_bundle_id = ""
+        self._pressed_keys: set[Any] = set()
+        self._shift_tap_interrupted = False
+        self._shift_is_down = False
+        self._tap_times: list[float] = []
+        self._ignore_stop_until = 0.0
         self._listener: Any | None = None
 
     def run(self) -> None:
@@ -85,10 +99,12 @@ class DictationApp:
         if self.config.enable_chunk_transcription:
             self.chunker.start()
             self.transcriber.start()
-        self._listener = self.keyboard.Listener(on_press=self._for_canonical(self._hotkey.press), on_release=self._on_release)
+        self._listener = self.keyboard.Listener(on_press=self._on_press, on_release=self._on_release)
         self._listener.start()
-        print(f"Ready. Hold {self.config.shortcut} to dictate. Press Ctrl+C to quit.", flush=True)
+        print("Ready. Triple-tap Shift to record. Press Shift again to stop. Press Ctrl+C to quit.", flush=True)
         while not self._shutdown.is_set():
+            self._remember_frontmost_app()
+            self._drain_control_events()
             self._collect_transcripts()
             time.sleep(0.05)
 
@@ -105,6 +121,13 @@ class DictationApp:
             return
         print("Recording...")
         self._session_started = time.perf_counter()
+        current_bundle_id = frontmost_bundle_id()
+        if current_bundle_id and current_bundle_id not in OWN_BUNDLE_IDS:
+            self._target_bundle_id = current_bundle_id
+        else:
+            self._target_bundle_id = self._last_target_bundle_id
+        if self._target_bundle_id:
+            print(f"target app: {self._target_bundle_id}", flush=True)
         self._session_transcripts.clear()
         self._drain_transcripts()
         self._finalizing.clear()
@@ -149,20 +172,75 @@ class DictationApp:
             self._drain_frames()
         self._finalize_session(full_session_audio)
 
+    def _on_press(self, key: Any | None) -> None:
+        canonical = self._canonical_key(key)
+        if self._is_shift_key(canonical):
+            if not self._shift_is_down:
+                self._shift_is_down = True
+                self._shift_tap_interrupted = False
+        elif self._shift_is_down:
+            self._shift_tap_interrupted = True
+        self._pressed_keys.add(canonical)
+
     def _on_release(self, key: Any | None) -> None:
-        canonical = self._listener.canonical(key) if self._listener is not None and key is not None else key
-        self._hotkey.release(canonical)
-        if self._recording.is_set() and canonical in self._hotkey_keys:
-            self._on_hotkey_up()
+        canonical = self._canonical_key(key)
+        self._pressed_keys.discard(canonical)
+        if not self._is_shift_key(canonical):
+            return
+        interrupted = self._shift_tap_interrupted or bool(self._pressed_keys)
+        self._shift_is_down = False
+        self._shift_tap_interrupted = False
+        if interrupted:
+            self._tap_times.clear()
+            return
+        now = time.perf_counter()
+        if self._recording.is_set():
+            if now >= self._ignore_stop_until:
+                self._tap_times.clear()
+                self._on_hotkey_up()
+            return
+        self._tap_times = [
+            tapped_at
+            for tapped_at in self._tap_times
+            if (now - tapped_at) * 1000 <= self.config.shift_tap_window_ms
+        ]
+        self._tap_times.append(now)
+        if len(self._tap_times) >= self.config.shift_tap_count:
+            self._tap_times.clear()
+            self._ignore_stop_until = now + (self.config.shift_stop_grace_ms / 1000)
+            self._on_hotkey_down()
 
-    def _for_canonical(self, callback):
-        def wrapper(key):
-            if self._listener is None:
-                callback(key)
-            else:
-                callback(self._listener.canonical(key))
+    def _canonical_key(self, key: Any | None) -> Any | None:
+        if self._listener is not None and key is not None:
+            return self._listener.canonical(key)
+        return key
 
-        return wrapper
+    def _is_shift_key(self, key: Any | None) -> bool:
+        return key in {
+            self.keyboard.Key.shift,
+            self.keyboard.Key.shift_l,
+            self.keyboard.Key.shift_r,
+        }
+
+    def _remember_frontmost_app(self) -> None:
+        if self._recording.is_set() or self._finalizing.is_set():
+            return
+        bundle_id = frontmost_bundle_id()
+        if bundle_id and bundle_id not in OWN_BUNDLE_IDS:
+            self._last_target_bundle_id = bundle_id
+
+    def _drain_control_events(self) -> None:
+        if self.control_events is None:
+            return
+        while True:
+            try:
+                event = self.control_events.get_nowait()
+            except Empty:
+                return
+            if event == "record":
+                self._on_hotkey_down()
+            elif event == "stop":
+                self._on_hotkey_up()
 
     def _finalize_session(self, full_session_audio) -> None:
         if self.config.enable_chunk_transcription:
@@ -203,11 +281,16 @@ class DictationApp:
             source_text = reconcile_text(assembled)
             reconcile_ms = (time.perf_counter() - reconcile_started) * 1000
 
-        cleanup = cleanup_with_metrics(source_text, self.config)
+        personal_started = time.perf_counter()
+        personal = apply_personal_corrections(source_text, self.config)
+        personal_ms = (time.perf_counter() - personal_started) * 1000
+        cleanup = cleanup_with_metrics(personal.text, self.config)
         final_text = cleanup.text
         if assembled:
             print(f"assembled: {assembled}", flush=True)
         print(f"source: {source_text}", flush=True)
+        if personal.applied:
+            print(f"personal corrections: {personal.text}", flush=True)
         if cleanup.llm_error:
             print(f"llm cleanup fallback: {cleanup.llm_error}", flush=True)
         print(f"final: {final_text}", flush=True)
@@ -215,7 +298,15 @@ class DictationApp:
         inserted = False
         insertion_error = ""
         try:
-            insert_text(final_text, self.config.text_insertion_method, self.config.restore_clipboard)
+            if self.config.refocus_before_insert and self._target_bundle_id:
+                activate_bundle_id(self._target_bundle_id)
+                time.sleep(0.15)
+            insert_text(
+                final_text,
+                self.config.text_insertion_method,
+                self.config.restore_clipboard,
+                self.config.mark_clipboard_transient,
+            )
             inserted = True
         except subprocess.SubprocessError as exc:
             insertion_error = _format_subprocess_error(exc)
@@ -231,6 +322,8 @@ class DictationApp:
             f"asr={full_asr_ms:.0f}ms "
             f"assemble={assemble_ms:.0f}ms "
             f"reconcile={reconcile_ms:.0f}ms "
+            f"personal_corrections={personal_ms:.0f}ms "
+            f"personal_corrections_applied={personal.applied} "
             f"deterministic_cleanup={cleanup.deterministic_ms:.0f}ms "
             f"llm_cleanup={cleanup.llm_ms:.0f}ms "
             f"cleanup_total={cleanup.total_ms:.0f}ms "
@@ -284,7 +377,11 @@ def _format_subprocess_error(exc: subprocess.SubprocessError) -> str:
     return str(exc)
 
 
-def main(status_callback: StatusCallback | None = None, keyboard_backend: Any | None = None) -> None:
+def main(
+    status_callback: StatusCallback | None = None,
+    keyboard_backend: Any | None = None,
+    control_events: Queue[str] | None = None,
+) -> None:
     multiprocessing.freeze_support()
 
     parser = argparse.ArgumentParser(description="Local push-to-talk dictation for macOS")
@@ -305,7 +402,7 @@ def main(status_callback: StatusCallback | None = None, keyboard_backend: Any | 
         print("Using preloaded macOS hotkey backend...", flush=True)
         keyboard = keyboard_backend
 
-    app = DictationApp(config, keyboard, status_callback=status_callback)
+    app = DictationApp(config, keyboard, status_callback=status_callback, control_events=control_events)
 
     def handle_signal(signum, frame) -> None:
         app.stop()
