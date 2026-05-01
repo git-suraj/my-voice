@@ -16,6 +16,8 @@ insert with clipboard paste
 
 Chunked/VAD transcription is still present as an experimental mode, but it is disabled by default because full-session transcription is more accurate. Reconciliation is only used for chunk-only fallback text, not for the default full-session transcript.
 
+`plan.md` is intentionally local-only. It may exist in your working directory for notes, but it is ignored and should not be committed to the repo.
+
 ## Install
 
 This project uses `uv` for the local virtual environment. The standard `python3 -m venv` path may fail with this Python installation.
